@@ -1,17 +1,15 @@
 #!/bin/sh
 
 logfile="/opt/vm_full_backup.log"
-tmpfile="/tmp/vm_esxi_backup.tmp"
+tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
 retention_number=3
 backup_directory="/vmfs/volumes/datastore1/backup-test"
-today=$(date +%s) # needed?
 
 # TODO: switches_
   # TODO: add switch to change between offline and online snapshots
   # TODO: output directory
 # TODO: current version is being made only for single disk VMs, test and adjust for multi-disk VMs (in .vmsd -> disk0, disk1, ..., probably also somewhere else)
 # TODO: filename sanitazation (spaces in vmdk file names?)
-# TODO: tee to the logfile
 # TODO: add backup rotations
 
 
@@ -45,39 +43,39 @@ createTmpSnapshot() {
 getVmDirectory() {
   vmPathName=$(vim-cmd vmsvc/get.summary $vmid | grep vmPathName | sed -n 's/.*"\(.*\)".*/\1/p') #example output: [SSD_480_1] debian-backup-test/debian-backup-test.vmx
   if [[ -z $vmPathName ]]; then
-    echo "$(date) - Failed to extract directory location of the specified VM, exiting..."
+    echo "$(date) - Failed to extract directory location of the specified VM, exiting..." | tee -a $logfile
     exit 1
   fi
   vm_absolute_location="/vmfs/volumes/$(echo "$vmPathName" | awk -F'[][]| |/' '{print $2"/"$4}')"
-  echo "$(date) - VMs directory found: $vm_absolute_location"
+  echo "$(date) - VMs directory found: $vm_absolute_location" | tee -a $logfile
 }
 
 getVmdk() {
   snapshot_disks="$(grep -E 'snapshot[0-9]+\.disk[0-9]+\.fileName' "$vm_absolute_location/$vm_name.vmsd")"
   if [[ -z $snapshot_disks ]]; then
-    echo "$(date) - No snapshots found for this VM, continuing to backup the base file (The VM must be shutdown!)"
+    echo "$(date) - No snapshots found for this VM, continuing to backup the base file (The VM must be shutdown!)" | tee -a $logfile
     getVmState()
     if [[ $? -eq 1 ]]; then
       echo "$(date) - VMID $vmid is powered on, cannot continue, exiting..." | tee -a $logfile
       exit 1
     fi
     if ! [[ -f "$vm_absolute_location/$vm_name.vmdk" ]]; then
-      echo "$(date) - Failed to find the base file of the VM, exiting..."
+      echo "$(date) - Failed to find the base file of the VM, exiting..." | tee -a $logfile
       exit 1
     fi
     vmdk_to_clone="$vm_absolute_location/$vm_name.vmdk"
   else
-    echo -e "$(date) - Found these snapshots:\n$snapshot_disks"
+    echo -e "$(date) - Found these snapshots:\n$snapshot_disks" | tee -a $logfile
     latest_snapshot=$(echo -e "$snapshot_disks" | sort | tail -n 1)
     latest_snapshot_disk=$(echo $latest_snapshot | awk -F' = ' '{print $2}' | sed 's/"//g')
-    echo "$(date) - Latest snapshot is: $(echo $latest_snapshot | cut -d . -f1)"
+    echo "$(date) - Latest snapshot is: $(echo $latest_snapshot | cut -d . -f1)" | tee -a $logfile
     vmdk_to_clone=$latest_snapshot_disk
   fi
-  echo "$(date) - VM will be cloned from $vmdk_to_clone"
+  echo "$(date) - VM will be cloned from $vmdk_to_clone" | tee -a $logfile
 }
 
 backupVm() {
-  echo "$(date) - Backing up the VM (.vmdk, .vmx, .nvram)"
+  echo "$(date) - Backing up the VM (.vmdk, .vmx, .nvram)" | tee -a $logfile
   vmkfstools -i "$vm_absolute_location/$vmdk_to_clone" "$backup_directory/$(date -I)/${vm_name}_$(date -I).vmdk" -d thin | tee -a $logfile
   cp "$vm_absolute_location/$vm_name.vmx" "$backup_directory/$(date -I)/${vm_name}_$(date -I).vmx" | tee -a $logfile
   cp "$vm_absolute_location/$vm_name.nvram" "$backup_directory/$(date -I)/${vm_name}_$(date -I).nvram" | tee -a $logfile
@@ -90,7 +88,7 @@ getSnapshotIdMapping() {
       level = RLENGTH
 
       if ($0 ~ /Snapshot Name[[:space:]]*:/) {
-          name[level] = $NF
+          name[level] = substr($0, index($0, ":") + 2)
       }
 
       if ($0 ~ /Snapshot Id[[:space:]]*:/) {
@@ -109,7 +107,7 @@ deleteTmpSnapshot() {
           vim-cmd vmsvc/snapshot.remove $vmid $snapshot_id
           get_snapshots_deletion_state()
           if [[ $? -ne 1 ]]; then
-            echo "$(date) - Failed deleting the temporary snapshot, manual action required..."
+            echo "$(date) - Failed deleting the temporary snapshot, manual action required..." | tee -a $logfile
             exit 1
           fi
       fi
@@ -168,7 +166,7 @@ if echo $vm_name | grep -Eq '^[0-9]+$'; then
 else
   vmid=$(vim-cmd vmsvc/getallvms | grep -w "$vm_name" | awk '{print $1}')
   if [[ -z $vmid ]]; then
-    echo "Failed to retreive vmid based on the provided name of VM: $vm_name" | tee -a $logfile
+    echo "$(date) - Failed to retreive vmid based on the provided name of VM: $vm_name" | tee -a $logfile
     exit 1
   fi
   echo "$(date) - VM Name \"$vm_name\" was resolved to VM ID: $vmid" | tee -a $logfile
