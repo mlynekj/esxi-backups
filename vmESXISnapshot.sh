@@ -12,7 +12,7 @@
 
 logfile="/opt/vm_backup.log"
 tmpfile="/tmp/vm_esxi_snapshot.tmp"
-retention_period=604800 #7 days
+retention_period=172800 #48 hours
 today=$(date +%s)
 
 input=$1
