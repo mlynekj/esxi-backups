@@ -19,34 +19,24 @@ getVmDirectory() {
 }
 
 getVmdk() {
-  # BUG: fix for a VM with multiple HDDs
-  disks="$(grep -o 'disk[0-9]\+' "$vm_absolute_location/$vm_name.vmsd" | sort -u)"
   vmdks_to_clone=""
+  disks="$(grep -o 'disk[0-9]\+' "$vm_absolute_location/$vm_name.vmsd" | sort -u)"
   for disk in $disks; do 
     snapshot_disks="$(grep -E "snapshot[0-9]+\.$disk+\.fileName" "$vm_absolute_location/$vm_name.vmsd")"
-    #FIX: Broken! --- is this needed?
-    # if [ -z "$snapshot_disks" ]; then
-    #   echo "$(date) - No snapshots found for this VM on disk: $disk, continuing to backup the base file" | tee -a $logfile
-    #   if ! [ -f "$vm_absolute_location/$vm_name.vmdk" ]; then 
-    #     echo "$(date) - Failed to find the base file of the VM, exiting..." | tee -a $logfile
-    #     exit 1
-    #   fi
-    # vmdks_to_clone="$vm_absolute_location/$vm_name.vmdk"
-    # # ---
-    # else
-    echo -e "$(date) - Found these snapshots:\n$snapshot_disks" | tee -a $logfile
+    echo -e "$(date) - For disk \"$disk, found these snapshots:\n$snapshot_disks" | tee -a $logfile
     latest_snapshot=$(echo -e "$snapshot_disks" | sort | tail -n 1)
     latest_snapshot_disk=$(echo $latest_snapshot | awk -F' = ' '{print $2}' | sed 's/"//g')
-    echo "$(date) - Latest snapshot for disk $disk is: $(echo $latest_snapshot | cut -d . -f1), cloning based on its disk: $(echo $latest_snapshot_disk)" | tee -a $logfile
+    echo "$(date) - Latest snapshot for disk \"$disk\" is: \"$(echo $latest_snapshot | cut -d . -f1)\", cloning based on its disk: $(echo $latest_snapshot_disk)" | tee -a $logfile
     vmdks_to_clone="$vmdks_to_clone $latest_snapshot_disk"
-    #fi
   done
-  echo "$(date) - VM will be cloned from disks/s $vmdks_to_clone" | tee -a $logfile
+  echo "$(date) - VM will be cloned from following VMDK/s: $vmdks_to_clone" | tee -a $logfile
 }
 
 backupVm() {
   echo "$(date) - Backing up the VM (.vmdk, .vmx, .nvram)" | tee -a $logfile
-  vmkfstools -i "$vm_absolute_location/$vmdks_to_clone" "$backup_instance_directory/$backup_name.vmdk" -d thin | tee -a $logfile
+  for vmdk in $vmdks_to_clone; do
+    vmkfstools -i "$vm_absolute_location/$vmdk" "$backup_instance_directory/$vmdk" -d thin | tee -a $logfile
+  done
   cp "$vm_absolute_location/$vm_name.vmx" "$backup_instance_directory/$backup_name.vmx" | tee -a $logfile
   cp "$vm_absolute_location/$vm_name.nvram" "$backup_instance_directory/$backup_name.nvram" | tee -a $logfile
 }
@@ -81,10 +71,9 @@ createTmpSnapshot() {
   snapshot_description="Temporary snapshot used for backup, created by $0 on $(date +%d_%m_%Y-%H:%M)"
   echo "$(date) - Creating snapshot $tmp_snapshot_name of VM with ID $vmid" | tee -a $logfile
   vim-cmd vmsvc/snapshot.create "$vmid" "$tmp_snapshot_name" "$snapshot_description" | tee -a $logfile
-  if [ $? -eq 0 ]; then
-    echo "$(date) - Snapshot: $tmp_snapshot_name of VM with ID $vmid created" | tee -a $logfile
-  else
-    echo "$(date) - Failed to create snapshot $tmp_snapshot_name of VM with ID $vmid, exiting" | tee -a $logfile
+  getSnapshotCreationState
+  if [ $? -ne 0 ]; then
+    echo "$(date) - Failed to create snapshot temporary snapshot \"$tmp_snapshot_name\" of VM with ID $vmid, exiting..." | tee -a $logfile
     exit 1
   fi
 }
@@ -133,6 +122,36 @@ getSnapshotDeletionState(){
   done
 }
 
+getSnapshotCreationState(){
+  for task in $(vim-cmd vmsvc/get.tasklist $vmid | grep "VirtualMachine.createSnapshot" | sed -n "s/.*vim.Task:\(.*\)'.*/\1/p"); do
+    local timeout=300
+    local elapsed=0
+    while true; do
+      sleep 1
+      elapsed=$((elapsed + 1))
+      echo "$(date) - Waiting for VMID $vmid to finish creating snapshots... (elapsed time: $elapsed seconds)" | tee -a $logfile
+      if [ $elapsed -ge $timeout ]; then
+        echo "$(date) - Timeout reached after $timeout seconds." | tee -a $logfile
+        exit 1
+      else
+        state=$(vim-cmd vimsvc/task_info $task | sed -n 's/.*state = "\([^"]*\)".*/\1/p')
+        if [ $state = "success" ]; then
+          echo "$(date) - Snapshot created" | tee -a $logfile
+          return 0
+        elif [ "$state" = "queued" ] || [ "$state" = "running" ]; then
+          echo "$(date) - Snapshot creation running, waiting..." | tee -a $logfile
+        elif [ $state = "error" ]; then
+          echo "$(date) - Failed to create snapshot" | tee -a $logfile
+          return 1
+        else
+          echo "$(date) - Unknown state of snapshot creation" | tee -a $logfile
+          return 1
+        fi
+      fi
+    done
+  done
+}
+
 
 
 
@@ -164,15 +183,15 @@ case "$backup_directory" in
     */) backup_directory=${backup_directory%/} ;;
 esac
 
-backup_name=""$vm_name"_$(date -I)" #debian_2025-11-21
-backup_instance_directory="$backup_directory/$backup_name" #/vmfs/volumes/datastore1/backups/debian_2025-11-21
+backup_name=""$vm_name"_$(date -I)" #eg: debian_2025-11-21
+backup_instance_directory="$backup_directory/$backup_name" #eg: /vmfs/volumes/datastore1/backups/debian_2025-11-21
 
 
 if [ -z $retention_number ]; then
   echo "Retention number not specified, using default ($retention_number)" >&2
 fi
 
-logfile="/opt/vm_full_backup_$($vm_name).log"
+logfile="/opt/vm_full_backup_$(echo $vm_name).log"
 tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
 
 echo "########## $(date) ##########" | tee -a $logfile
@@ -204,7 +223,7 @@ createTmpSnapshot
 echo "----- FIND VMs DIRECTORY -----" | tee -a $logfile
 getVmDirectory
 
-echo "----- FIND VMs VMDK FILE -----" | tee -a $logfile
+echo "----- FIND VMs VMDK FILES -----" | tee -a $logfile
 getVmdk
 
 echo "----- BACKUP THE VM -----" | tee -a $logfile
