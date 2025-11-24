@@ -1,14 +1,17 @@
 #!/bin/sh
 
-# TODO: switches
-  # TODO: add switch to change between offline and online snapshots
-# TODO: current version is only for single disk VMs, test and adjust for multi-disk VMs (in .vmsd -> disk0, disk1, ..., probably also somewhere else)
-# TODO: filename sanitazation (spaces in vmdk file names?)
-# TODO: add backup rotations
+# TODO: add switch to change between offline and online snapshots
+# TODO: add integrity check of cloned vmdks (-q or -x)
+
+# ----- Parameters and constants -----
 retention_number=3
+tmp_snapshot_name="BACKUP-TMP-SNP"
+logfile="/opt/vm_full_backup_$(echo $vm_name).log"
+tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
+# --------------------------------------
 
 getVmDirectory() {
-  # BUG: fix for a situation if the VM is stored in multiple volumes (multiple datastores), currently supports only single volume
+  # TODO: fix for a situation if the VM is stored in multiple volumes (multiple datastores), currently supports only single volume
   vmPathName=$(vim-cmd vmsvc/get.summary $vmid | grep vmPathName | sed -n 's/.*"\(.*\)".*/\1/p') #example output: [SSD_480_1] debian-backup-test/debian-backup-test.vmx
   if [ -z "$vmPathName" ]; then
     echo "$(date) - Failed to extract directory location of the specified VM, exiting..." | tee -a $logfile
@@ -21,9 +24,10 @@ getVmDirectory() {
 getVmdk() {
   vmdks_to_clone=""
   disks="$(grep -o 'disk[0-9]\+' "$vm_absolute_location/$vm_name.vmsd" | sort -u)"
+  echo -e "$(date) - Found following disks: $disks" | tee -a $logfile
   for disk in $disks; do 
     snapshot_disks="$(grep -E "snapshot[0-9]+\.$disk+\.fileName" "$vm_absolute_location/$vm_name.vmsd")"
-    echo -e "$(date) - For disk \"$disk, found these snapshots:\n$snapshot_disks" | tee -a $logfile
+    echo -e "$(date) - For disk \"$disk, found these snapshots:\n$snapshot_disks, looking for the latest one..." | tee -a $logfile
     latest_snapshot=$(echo -e "$snapshot_disks" | sort | tail -n 1)
     latest_snapshot_disk=$(echo $latest_snapshot | awk -F' = ' '{print $2}' | sed 's/"//g')
     echo "$(date) - Latest snapshot for disk \"$disk\" is: \"$(echo $latest_snapshot | cut -d . -f1)\", cloning based on its disk: $(echo $latest_snapshot_disk)" | tee -a $logfile
@@ -33,6 +37,7 @@ getVmdk() {
 }
 
 backupVm() {
+  # TODO: error checking if the commands are succesfull, if not return 1. Then perform another check in main, where if $?=1, do something
   echo "$(date) - Backing up the VM (.vmdk, .vmx, .nvram)" | tee -a $logfile
   for vmdk in $vmdks_to_clone; do
     vmkfstools -i "$vm_absolute_location/$vmdk" "$backup_instance_directory/$vmdk" -d thin | tee -a $logfile
@@ -42,7 +47,7 @@ backupVm() {
 }
 
 getSnapshotIdMapping() {
-  vim-cmd vmsvc/snapshot.get $vmid | grep -E "Snapshot Name|Snapshot Id" | awk '
+  vim-cmd vmsvc/snapshot.get "$vmid" | grep -E "Snapshot Name|Snapshot Id" | awk '
   {
       match($0, /^-+/)
       level = RLENGTH
@@ -61,7 +66,7 @@ getSnapshotIdMapping() {
 }
 
 checkIfTmpSnapshotExists() {
-  if vim-cmd vmsvc/snapshot.get $vmid | grep -q $tmp_snapshot_name; then
+  if vim-cmd vmsvc/snapshot.get "$vmid" | grep -q $tmp_snapshot_name; then
     echo "$(date) - Snapshot named: $tmp_snapshot_name already exists, cannot continue, exiting..." | tee -a $logfile
     exit 1
   fi
@@ -152,6 +157,16 @@ getSnapshotCreationState(){
   done
 }
 
+rotateOldBackups(){
+  backup_count=$(find "$backup_directory" -maxdepth 1 -type d -name "${vm_name}_*" | wc -l)
+  while [ $backup_count -gt $retention_number ]; do
+    backup_to_be_deleted=$(find "$backup_directory" -maxdepth 1 -type d -name "${vm_name}_*" | sort -t_ -k2 | head -n 1)
+    echo "$(date) - Deleting backup \"$backup_to_be_deleted\"" | tee -a $logfile
+    rm -rf $backup_to_be_deleted
+    backup_count=$(find "$backup_directory" -maxdepth 1 -type d -name "${vm_name}_*" | wc -l)
+  done
+}
+
 
 
 
@@ -179,6 +194,11 @@ if [ -z $backup_directory ]; then
   exit 1
 fi
 
+if [ ! -d "$backup_directory" ] || [ ! -w "$backup_directory" ]; then
+    echo "Error: Backup directory doesn't exist or isn't writable" >&2
+    exit 1
+fi
+
 case "$backup_directory" in
     */) backup_directory=${backup_directory%/} ;;
 esac
@@ -186,13 +206,9 @@ esac
 backup_name=""$vm_name"_$(date -I)" #eg: debian_2025-11-21
 backup_instance_directory="$backup_directory/$backup_name" #eg: /vmfs/volumes/datastore1/backups/debian_2025-11-21
 
-
 if [ -z $retention_number ]; then
   echo "Retention number not specified, using default ($retention_number)" >&2
 fi
-
-logfile="/opt/vm_full_backup_$(echo $vm_name).log"
-tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
 
 echo "########## $(date) ##########" | tee -a $logfile
 
@@ -216,12 +232,20 @@ else
 fi
 
 echo "----- CREATE TEMPORARY SNAPSHOT -----" | tee -a $logfile
-tmp_snapshot_name="BACKUP-TMP-SNP"
 checkIfTmpSnapshotExists
 createTmpSnapshot
+getSnapshotIdMapping
 
 echo "----- FIND VMs DIRECTORY -----" | tee -a $logfile
 getVmDirectory
+required_space=$(du -s "$vm_absolute_location" | awk '{print $1}')
+available_space=$(df "$backup_directory" | awk 'NR==2 {print $4}')
+echo "$(date) - The backup requires $(du -sh "$vm_absolute_location" | awk '{print $1}') of free space. Available space in the target directory: $(df -h "$backup_directory" | awk 'NR==2 {print $4}')"
+if [ "$required_space" -gt "$available_space" ]; then
+  echo "$(date) - Insufficient disk space for backup, exiting..." | tee -a $logfile
+  deleteTmpSnapshot
+  exit 1
+fi
 
 echo "----- FIND VMs VMDK FILES -----" | tee -a $logfile
 getVmdk
@@ -230,8 +254,10 @@ echo "----- BACKUP THE VM -----" | tee -a $logfile
 backupVm
 
 echo "----- DELETE TEMPORARY SNAPSHOT -----" | tee -a $logfile
-getSnapshotIdMapping
 deleteTmpSnapshot
 
+echo "----- ROTATE OLD BACKUPS -----" | tee -a $logfile
+rotateOldBackups
+
 echo "----- COMPLETED -----" | tee -a $logfile
-echo -e "$(date) - Backup created succesfully.\nFor restoration of the backup, you will need to manually select the newly created VMDK when importing, or edit the line in the VMX file that refers to it."
+echo "$(date) - Backup created succesfully."
