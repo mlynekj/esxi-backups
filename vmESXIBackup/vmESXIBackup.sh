@@ -32,6 +32,7 @@ getVmdk() {
 backupVm() {
   echo "$(date) - Backing up the VM (.vmdk, .vmx, .nvram)" | tee -a $logfile
   for vmdk in $vmdks_to_clone; do
+    if [ $DEBUG = true ]; then read -p "CLONE $vm_absolute_location/$vmdk TO $backup_instance_directory/$vmdk. Press enter to continue"; fi
     vmkfstools -i "$vm_absolute_location/$vmdk" "$backup_instance_directory/$vmdk" -d thin >> $logfile 2>&1
     if [ $? -eq 0 ]; then
       echo "$(date) - Completed vmkfs cloning on VMDK: $vmdk" | tee -a $logfile
@@ -41,6 +42,7 @@ backupVm() {
     fi
   done
   
+  if [ $DEBUG = true ]; then read -p "COPY $vm_absolute_location/$vm_name.vmx TO $backup_instance_directory/$backup_name.vmx. Press enter to continue"; fi
   cp "$vm_absolute_location/$vm_name.vmx" "$backup_instance_directory/$backup_name.vmx" >> $logfile 2>&1
   if [ $? -eq 0 ]; then
     echo "$(date) - Completed copying: $vm_absolute_location/$vm_name.vmx to $backup_instance_directory/$backup_name.vmx" | tee -a $logfile
@@ -49,6 +51,7 @@ backupVm() {
     return 1
   fi
   
+  if [ $DEBUG = true ]; then read -p "COPY $vm_absolute_location/$vm_name.nvram TO $backup_instance_directory/$backup_name.nvram. Press enter to continue"; fi
   cp "$vm_absolute_location/$vm_name.nvram" "$backup_instance_directory/$backup_name.nvram" >> $logfile 2>&1
   if [ $? -eq 0 ]; then
     echo "$(date) - Completed copying: $vm_absolute_location/$vm_name.nvram to $backup_instance_directory/$backup_name.nvram" | tee -a $logfile
@@ -177,6 +180,7 @@ rotateOldBackups(){
   while [ $backup_count -gt $retention_number ]; do
     backup_to_be_deleted=$(find "$backup_directory" -maxdepth 1 -type d -name "${vm_name}_*" | sort -t_ -k2 | head -n 1)
     echo "$(date) - Deleting backup \"$backup_to_be_deleted\"" | tee -a $logfile
+    if [ $DEBUG = true ]; then read -p "DELETE BACKUP. Press enter to continue"; fi
     rm -rf $backup_to_be_deleted
     backup_count=$(find "$backup_directory" -maxdepth 1 -type d -name "${vm_name}_*" | wc -l)
   done
@@ -184,12 +188,13 @@ rotateOldBackups(){
 
 
 # ---------------------------------------- Main ----------------------------------------
-while getopts "n:b:r" opt; do
+while getopts "n:b:r:d" opt; do
     case "$opt" in
         n) vm_name="$OPTARG" ;;
         b) backup_directory="$OPTARG" ;;
         r) retention_number="$OPTARG" ;;
-        ?) echo "Usage: $0 -n <vm_name> -b <backup_dir> [-r <retention_number>]" >&2
+        d) DEBUG=true ;;
+        ?) echo "Usage: $0 -n <vm_name> -b <backup_dir> [-r <retention_number>] [-d]" >&2
            exit 1 ;;
     esac
 done
@@ -219,6 +224,10 @@ if [ -z $retention_number ]; then
   echo "Retention number not specified, using default" >&2
 fi
 
+if [ "$DEBUG" = true ]; then
+    echo "Debug mode enabled" >&2
+fi
+
 # ----- Parameters and constants -----
 backup_name=""$vm_name"_$(date -I)" #eg: debian_2025-11-21
 backup_instance_directory="$backup_directory/$backup_name" #eg: /vmfs/volumes/datastore1/backups/debian_2025-11-21
@@ -230,6 +239,7 @@ tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
 
 echo "########## $(date) ##########" | tee -a $logfile
 
+if [ $DEBUG = true ]; then read -p "CREATE DIRECTORY. Press enter to continue"; fi
 mkdir "$backup_instance_directory"
 if [ $? -eq 1 ]; then
   echo "$(date) - Failed to create a subdirectory in the specified backup directory, exiting..."  | tee -a $logfile
@@ -253,11 +263,13 @@ else
 fi
 
 echo "----- CREATE TEMPORARY SNAPSHOT -----" | tee -a $logfile
+if [ $DEBUG = true ]; then read -p "CREATE TMP SNAPSHOT. Press enter to continue"; fi
 checkIfTmpSnapshotExists
 createTmpSnapshot
 getSnapshotIdMapping
 
 echo "----- FIND VMs DIRECTORY -----" | tee -a $logfile
+if [ $DEBUG = true ]; then read -p "GET VM DIRECTORY. Press enter to continue"; fi
 getVmDirectory
 required_space=$(du -s "$vm_absolute_location" | awk '{print $1}')
 required_space_human=$(du -sh "$vm_absolute_location" | awk '{print $1}')
@@ -271,9 +283,11 @@ if [ "$required_space" -gt "$available_space" ]; then
 fi
 
 echo "----- FIND VMs VMDK FILES -----" | tee -a $logfile
+if [ $DEBUG = true ]; then read -p "FIND VMKDS. Press enter to continue"; fi
 getVmdk
 
 echo "----- BACKUP THE VM -----" | tee -a $logfile
+if [ $DEBUG = true ]; then read -p "BACKUP THE VM. Press enter to continue"; fi
 backupVm
 if [ $? -eq 0 ]; then
   echo "$(date) - Backup of the VM was succesfull" | tee -a $logfile
@@ -284,9 +298,11 @@ else
 fi
 
 echo "----- DELETE TEMPORARY SNAPSHOT -----" | tee -a $logfile
+if [ $DEBUG = true ]; then read -p "DELETE TMP SNAPSHOT. Press enter to continue"; fi
 deleteTmpSnapshot
 
 echo "----- ROTATE OLD BACKUPS -----" | tee -a $logfile
+if [ $DEBUG = true ]; then read -p "ROTATE OLD BACKUPS. Press enter to continue"; fi
 rotateOldBackups
 
 echo "----- COMPLETED -----" | tee -a $logfile
