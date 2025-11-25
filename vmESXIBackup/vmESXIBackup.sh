@@ -184,8 +184,6 @@ rotateOldBackups(){
 
 
 # ---------------------------------------- Main ----------------------------------------
-echo "########## $(date) ##########" | tee -a $logfile
-
 while getopts "n:b:r" opt; do
     case "$opt" in
         n) vm_name="$OPTARG" ;;
@@ -221,19 +219,20 @@ if [ -z $retention_number ]; then
   echo "Retention number not specified, using default" >&2
 fi
 
+# ----- Parameters and constants -----
 backup_name=""$vm_name"_$(date -I)" #eg: debian_2025-11-21
 backup_instance_directory="$backup_directory/$backup_name" #eg: /vmfs/volumes/datastore1/backups/debian_2025-11-21
-
-# ----- Parameters and constants -----
 retention_number=3
 tmp_snapshot_name="BACKUP-TMP-SNP"
 logfile="/opt/vmESXIBackup_$(echo $vm_name).log"
 tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
 # --------------------------------------
 
+echo "########## $(date) ##########" | tee -a $logfile
+
 mkdir "$backup_instance_directory"
 if [ $? -eq 1 ]; then
-  echo "$(date) - Failed to create a subdirectory in the specified backup directory, exiting..."
+  echo "$(date) - Failed to create a subdirectory in the specified backup directory, exiting..."  | tee -a $logfile
   exit 1
 fi
 
@@ -291,4 +290,4 @@ echo "----- ROTATE OLD BACKUPS -----" | tee -a $logfile
 rotateOldBackups
 
 echo "----- COMPLETED -----" | tee -a $logfile
-echo "$(date) - Backup created succesfully."
+echo "$(date) - Backup created succesfully." | tee -a $logfile
