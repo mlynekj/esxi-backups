@@ -3,13 +3,6 @@
 # TODO: add switch to change between offline and online snapshots
 # TODO: add integrity check of cloned vmdks (-q or -x)
 
-# ----- Parameters and constants -----
-retention_number=3
-tmp_snapshot_name="BACKUP-TMP-SNP"
-logfile="/opt/vm_full_backup_$(echo $vm_name).log"
-tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
-# --------------------------------------
-
 getVmDirectory() {
   # TODO: fix for a situation if the VM is stored in multiple volumes (multiple datastores), currently supports only single volume
   vmPathName=$(vim-cmd vmsvc/get.summary $vmid | grep vmPathName | sed -n 's/.*"\(.*\)".*/\1/p') #example output: [SSD_480_1] debian-backup-test/debian-backup-test.vmx
@@ -24,10 +17,10 @@ getVmDirectory() {
 getVmdk() {
   vmdks_to_clone=""
   disks="$(grep -o 'disk[0-9]\+' "$vm_absolute_location/$vm_name.vmsd" | sort -u)"
-  echo -e "$(date) - Found following disks: $disks" | tee -a $logfile
+  echo -e "$(date) - Found following disks:\n$disks" | tee -a $logfile
   for disk in $disks; do 
     snapshot_disks="$(grep -E "snapshot[0-9]+\.$disk+\.fileName" "$vm_absolute_location/$vm_name.vmsd")"
-    echo -e "$(date) - For disk \"$disk, found these snapshots:\n$snapshot_disks, looking for the latest one..." | tee -a $logfile
+    echo -e "$(date) - For disk \"$disk, found these snapshots:\n$snapshot_disks" | tee -a $logfile
     latest_snapshot=$(echo -e "$snapshot_disks" | sort | tail -n 1)
     latest_snapshot_disk=$(echo $latest_snapshot | awk -F' = ' '{print $2}' | sed 's/"//g')
     echo "$(date) - Latest snapshot for disk \"$disk\" is: \"$(echo $latest_snapshot | cut -d . -f1)\", cloning based on its disk: $(echo $latest_snapshot_disk)" | tee -a $logfile
@@ -37,13 +30,32 @@ getVmdk() {
 }
 
 backupVm() {
-  # TODO: error checking if the commands are succesfull, if not return 1. Then perform another check in main, where if $?=1, do something
   echo "$(date) - Backing up the VM (.vmdk, .vmx, .nvram)" | tee -a $logfile
   for vmdk in $vmdks_to_clone; do
-    vmkfstools -i "$vm_absolute_location/$vmdk" "$backup_instance_directory/$vmdk" -d thin | tee -a $logfile
+    vmkfstools -i "$vm_absolute_location/$vmdk" "$backup_instance_directory/$vmdk" -d thin >> $logfile 2>&1
+    if [ $? -eq 0 ]; then
+      echo "$(date) - Completed vmkfs cloning on VMDK: $vmdk" | tee -a $logfile
+    else
+      echo "$(date) - Failed vmkfs cloning on VMDK: $vmdk" | tee -a $logfile
+      return 1
+    fi
   done
-  cp "$vm_absolute_location/$vm_name.vmx" "$backup_instance_directory/$backup_name.vmx" | tee -a $logfile
-  cp "$vm_absolute_location/$vm_name.nvram" "$backup_instance_directory/$backup_name.nvram" | tee -a $logfile
+  
+  cp "$vm_absolute_location/$vm_name.vmx" "$backup_instance_directory/$backup_name.vmx" >> $logfile 2>&1
+  if [ $? -eq 0 ]; then
+    echo "$(date) - Completed copying: $vm_absolute_location/$vm_name.vmx to $backup_instance_directory/$backup_name.vmx" | tee -a $logfile
+  else
+    echo "$(date) - Failed copying: $vm_absolute_location/$vm_name.vmx to $backup_instance_directory/$backup_name.vmx" | tee -a $logfile
+    return 1
+  fi
+  
+  cp "$vm_absolute_location/$vm_name.nvram" "$backup_instance_directory/$backup_name.nvram" >> $logfile 2>&1
+  if [ $? -eq 0 ]; then
+    echo "$(date) - Completed copying: $vm_absolute_location/$vm_name.nvram to $backup_instance_directory/$backup_name.nvram" | tee -a $logfile
+  else
+    echo "$(date) - Failed copying: $vm_absolute_location/$vm_name.nvram to $backup_instance_directory/$backup_name.nvram" | tee -a $logfile
+    return 1
+  fi
 }
 
 getSnapshotIdMapping() {
@@ -159,6 +171,9 @@ getSnapshotCreationState(){
 
 rotateOldBackups(){
   backup_count=$(find "$backup_directory" -maxdepth 1 -type d -name "${vm_name}_*" | wc -l)
+  if [ $backup_count -lt $retention_number ]; then
+    echo "$(date) - No old backups found to be deleted" | tee -a $logfile
+  fi
   while [ $backup_count -gt $retention_number ]; do
     backup_to_be_deleted=$(find "$backup_directory" -maxdepth 1 -type d -name "${vm_name}_*" | sort -t_ -k2 | head -n 1)
     echo "$(date) - Deleting backup \"$backup_to_be_deleted\"" | tee -a $logfile
@@ -168,10 +183,9 @@ rotateOldBackups(){
 }
 
 
+# ---------------------------------------- Main ----------------------------------------
+echo "########## $(date) ##########" | tee -a $logfile
 
-
-
-# ----- Main -----
 while getopts "n:b:r" opt; do
     case "$opt" in
         n) vm_name="$OPTARG" ;;
@@ -203,16 +217,21 @@ case "$backup_directory" in
     */) backup_directory=${backup_directory%/} ;;
 esac
 
+if [ -z $retention_number ]; then
+  echo "Retention number not specified, using default" >&2
+fi
+
 backup_name=""$vm_name"_$(date -I)" #eg: debian_2025-11-21
 backup_instance_directory="$backup_directory/$backup_name" #eg: /vmfs/volumes/datastore1/backups/debian_2025-11-21
 
-if [ -z $retention_number ]; then
-  echo "Retention number not specified, using default ($retention_number)" >&2
-fi
+# ----- Parameters and constants -----
+retention_number=3
+tmp_snapshot_name="BACKUP-TMP-SNP"
+logfile="/opt/vmESXIBackup_$(echo $vm_name).log"
+tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
+# --------------------------------------
 
-echo "########## $(date) ##########" | tee -a $logfile
-
-mkdir -p "$backup_instance_directory"
+mkdir "$backup_instance_directory"
 if [ $? -eq 1 ]; then
   echo "$(date) - Failed to create a subdirectory in the specified backup directory, exiting..."
   exit 1
@@ -227,8 +246,8 @@ else
   if [ -z $vmid ]; then
     echo "$(date) - Failed to retreive vmid based on the provided name of VM: $vm_name" | tee -a $logfile
     exit 1
-  elif [ "$(echo $vmid | wc -w)" -gt 1]; then
-    echo "$(date) - Failed to retreive vmid based on the provided name of VM (supplied vm_name resolves to multiple vmid's): $vm_name" | tee -a $logfile
+  elif [ "$(echo $vmid | wc -w)" -gt 1 ]; then
+    echo "$(date) - Failed to retreive vmid based on the provided name of VM: $vm_name (supplied vm_name resolves to multiple vmid's)" | tee -a $logfile
     exit 1
   fi
   echo "$(date) - VM Name \"$vm_name\" was resolved to VM ID: $vmid" | tee -a $logfile
@@ -242,8 +261,10 @@ getSnapshotIdMapping
 echo "----- FIND VMs DIRECTORY -----" | tee -a $logfile
 getVmDirectory
 required_space=$(du -s "$vm_absolute_location" | awk '{print $1}')
+required_space_human=$(du -sh "$vm_absolute_location" | awk '{print $1}')
 available_space=$(df "$backup_directory" | awk 'NR==2 {print $4}')
-echo "$(date) - The backup requires $(du -sh "$vm_absolute_location" | awk '{print $1}') of free space. Available space in the target directory: $(df -h "$backup_directory" | awk 'NR==2 {print $4}')"
+available_space_human=$(df -h "$backup_directory" | awk 'NR==2 {print $4}')
+echo "$(date) - The backup requires $required_space_human of free space. Available space in the target directory: $available_space_human"
 if [ "$required_space" -gt "$available_space" ]; then
   echo "$(date) - Insufficient disk space for backup, exiting..." | tee -a $logfile
   deleteTmpSnapshot
@@ -255,6 +276,13 @@ getVmdk
 
 echo "----- BACKUP THE VM -----" | tee -a $logfile
 backupVm
+if [ $? -eq 0 ]; then
+  echo "$(date) - Backup of the VM was succesfull" | tee -a $logfile
+else
+  echo "$(date) - Backup of the VM failed, exiting..." | tee -a $logfile
+  deleteTmpSnapshot
+  exit 1
+fi
 
 echo "----- DELETE TEMPORARY SNAPSHOT -----" | tee -a $logfile
 deleteTmpSnapshot
