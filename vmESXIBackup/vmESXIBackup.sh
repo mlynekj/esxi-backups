@@ -227,6 +227,9 @@ else
   if [ -z $vmid ]; then
     echo "$(date) - Failed to retreive vmid based on the provided name of VM: $vm_name" | tee -a $logfile
     exit 1
+  elif [ "$(echo $vmid | wc -w)" -gt 1]; then
+    echo "$(date) - Failed to retreive vmid based on the provided name of VM (supplied vm_name resolves to multiple vmid's): $vm_name" | tee -a $logfile
+    exit 1
   fi
   echo "$(date) - VM Name \"$vm_name\" was resolved to VM ID: $vmid" | tee -a $logfile
 fi
