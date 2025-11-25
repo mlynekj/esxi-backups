@@ -11,6 +11,28 @@ This script relies on `vim-cmd` and `vmkfs` on the ESXi hosts to work. The backu
 
 The script finds the VM based on its supplied name, resolves it to a VMID and finds the directory where the VM is stored. A a subdirectory is created in the specified target directory by the pattern `<vm_name>_$(date -I)`, ie: `debian_2025-11-25`. Then a temporary snapshot is created, all required .vmdk files are cloned using `vmkfs`, and .vmx and .nvram files are copied using generic `cp`. At the end, the temporary snapshot is deleted and old snapshots are rotated according to the provided `retention number (-r)`.
 
+```mermaid
+flowchart TD
+    A[Start: VM Backup Script] --> B[Input: VM Name, Target Directory, Retention]
+    B --> C[Find VM]
+    C --> D[Locate VM Storage Directory]
+    D --> E[Create Target Subdirectory<br/>Pattern: vm_name_YYYY-MM-DD]
+    E --> F[Create Temporary Snapshot]
+    F --> G[Clone .vmdk Files<br/>using vmkfs]
+    G --> H[Copy .vmx and .nvram Files<br/>using cp]
+    H --> I[Delete Temporary Snapshot]
+    I --> J[Rotate Old Backups<br/>Based on Retention -r]
+    J --> K[End: Backup Complete]
+    
+    style A fill:#FF000F,color:#fff
+    style K fill:#007a33,color:#fff
+    style F fill:#6764f6,color:#fff
+    style I fill:#6764f6,color:#fff
+    style G fill:#004c97,color:#fff
+    style H fill:#004c97,color:#fff
+
+```
+
 ## Script usage
 
 Move the script to the ESXi host and make it executable:
