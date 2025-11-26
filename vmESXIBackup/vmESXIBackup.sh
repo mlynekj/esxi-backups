@@ -1,5 +1,13 @@
 #!/bin/sh
 
+# ------------------------------------------------------------
+# Script for creating manual backups of VMs on VMWare ESXi hosts.
+# Usefull for unlicensed versions of ESXi, as they are unable
+# to be backed up by conventional methods/solutions.
+# 
+# Jakub Mlynek
+# ------------------------------------------------------------
+
 # TODO: add switch to change between offline and online snapshots
 # TODO: add integrity check of cloned vmdks (-q or -x)
 
@@ -91,6 +99,7 @@ createTmpSnapshot() {
   snapshot_description="Temporary snapshot used for backup, created by $0 on $(date +%d_%m_%Y-%H:%M)"
   echo "$(date) - Creating snapshot $tmp_snapshot_name of VM with ID $vmid" | tee -a $logfile
   vim-cmd vmsvc/snapshot.create "$vmid" "$tmp_snapshot_name" "$snapshot_description" | tee -a $logfile
+  sleep 5
   getSnapshotCreationState
   if [ $? -ne 0 ]; then
     echo "$(date) - Failed to create snapshot temporary snapshot \"$tmp_snapshot_name\" of VM with ID $vmid, exiting..." | tee -a $logfile
@@ -103,6 +112,7 @@ deleteTmpSnapshot() {
       if [ $snapshot_name = $tmp_snapshot_name ]; then
           echo "$(date) - Deleting snapshot: $tmp_snapshot_name with ID: $snapshot_id" | tee -a $logfile
           vim-cmd vmsvc/snapshot.remove $vmid $snapshot_id | tee -a $logfile
+          sleep 5
           getSnapshotDeletionState
           if [ $? -ne 0 ]; then
             echo "$(date) - Failed deleting the temporary snapshot, manual action required, exiting..." | tee -a $logfile
@@ -222,6 +232,7 @@ esac
 
 if [ -z $retention_number ]; then
   echo "Retention number not specified, using default" >&2
+  retention_number=3
 fi
 
 if [ "$DEBUG" = true ]; then
@@ -231,7 +242,6 @@ fi
 # ----- Parameters and constants -----
 backup_name=""$vm_name"_$(date -I)" #eg: debian_2025-11-21
 backup_instance_directory="$backup_directory/$backup_name" #eg: /vmfs/volumes/datastore1/backups/debian_2025-11-21
-retention_number=3
 tmp_snapshot_name="BACKUP-TMP-SNP"
 logfile="/opt/vmESXIBackup_$(echo $vm_name).log"
 tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
@@ -239,7 +249,7 @@ tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
 
 echo "########## $(date) ##########" | tee -a $logfile
 
-if [ $DEBUG = true ]; then read -p "CREATE DIRECTORY. Press enter to continue"; fi
+if [ $DEBUG = true ]; then read -p "CREATE DIRECTORY $backup_instance_directory. Press enter to continue"; fi
 mkdir "$backup_instance_directory"
 if [ $? -eq 1 ]; then
   echo "$(date) - Failed to create a subdirectory in the specified backup directory, exiting..."  | tee -a $logfile
