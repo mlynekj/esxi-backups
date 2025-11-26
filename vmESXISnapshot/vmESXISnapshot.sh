@@ -158,7 +158,9 @@ getSnapshotDeletionState(){
 
 
 # ----- Main -----
-while getopts "n:p:r" opt; do
+echo "########## $(date) ##########" | tee -a $logfile
+
+while getopts "n:p:r:" opt; do
     case "$opt" in
         n) vm_name="$OPTARG" ;;
         p) power_state="$OPTARG" ;;
@@ -214,8 +216,6 @@ else
   fi
   echo "$(date) - VM Name \"$vm_name\" was resolved to VM ID: $vmid" | tee -a $logfile
 fi
-
-echo "########## $(date) ##########" | tee -a $logfile
 
 getVmState
 vm_state_before_snapshot=$?
