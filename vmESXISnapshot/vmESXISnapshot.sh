@@ -10,32 +10,7 @@
 # Jakub Mlynek, David Kozel
 # ------------------------------------------------------------
 
-logfile="/opt/vm_backup.log"
-tmpfile="/tmp/vm_esxi_snapshot.tmp"
-retention_period=172800 #48 hours
-today=$(date +%s)
-
-input=$1
-if [[ -z $input ]]; then
-  echo "Usage: $0 <vmid|vmname>"
-  exit 1
-fi
-
-echo "########## $(date) ##########" | tee -a $logfile
-
-#get vmid based on the input (vmid|vmname)
-if echo $input | grep -Eq '^[0-9]+$'; then
-  vmid=$input
-else
-  vmid=$(vim-cmd vmsvc/getallvms | grep -w "$input" | awk '{print $1}')
-  if [[ -z $vmid ]]; then
-    echo "Failed to retreive vmid based on the provided name of VM: $input" | tee -a $logfile
-    exit 1
-  fi
-  echo "$(date) - VM Name \"$input\" was resolved to VM ID: $vmid" | tee -a $logfile
-fi
-
-get_vm_state() {
+getVmState() {
   local state=$(vim-cmd vmsvc/power.getstate "$vmid" | tail -1 | awk '{print $2}')
   if [[ $state == "on" ]]; then
     echo "$(date) - VMID $vmid is powered on" | tee -a $logfile
@@ -49,7 +24,7 @@ get_vm_state() {
   fi
 }
 
-power_off_vm() {
+powerOffVm() {
   echo "$(date) - Powering off VMID $vmid" | tee -a $logfile
   local timeout=300
   local elapsed=0
@@ -63,7 +38,7 @@ power_off_vm() {
       echo "$(date) - Timeout reached after $timeout seconds." | tee -a $logfile
       exit 1
     else
-      get_vm_state
+      getVmState
       if [[ $? -eq 0 ]]; then
         echo "$(date) - VMID $vmid is powered off" | tee -a $logfile
         break
@@ -72,7 +47,7 @@ power_off_vm() {
   done
 }
 
-power_on_vm() {
+powerOnVm() {
   echo "$(date) - Powering on VMID $vmid" | tee -a $logfile
   vim-cmd vmsvc/power.on "$vmid" | tee -a $logfile
   sleep 5
@@ -86,7 +61,7 @@ power_on_vm() {
       echo "$(date) - Timeout reached after $timeout seconds." | tee -a $logfile
       exit 1
     else
-      get_vm_state
+      getVmState
       if [[ $? -eq 1 ]]; then
         echo "$(date) - VMID $vmid is powered on" | tee -a $logfile
         break
@@ -95,7 +70,7 @@ power_on_vm() {
   done
 }
 
-create_snapshot() {
+createSnapshot() {
   snapshot_name=$(date -I)
   snapshot_description="Automatic snapshot created by $0 on $(date +%d_%m_%Y-%H:%M)"
   echo "$(date) - Creating snapshot $snapshot_name of VM with ID $vmid" | tee -a $logfile
@@ -108,15 +83,14 @@ create_snapshot() {
   fi
 }
 
-delete_old_snapshots() {
-  #get all snapshots for the VM, pair each snapshot name with its ID, store in a tmp file
-  vim-cmd vmsvc/snapshot.get $vmid | grep -E "Snapshot Name|Snapshot Id" | awk '
+getSnapshotIdMapping() {
+  vim-cmd vmsvc/snapshot.get "$vmid" | grep -E "Snapshot Name|Snapshot Id" | awk '
   {
       match($0, /^-+/)
       level = RLENGTH
 
       if ($0 ~ /Snapshot Name[[:space:]]*:/) {
-          name[level] = $NF
+          name[level] = substr($0, index($0, ":") + 2)
       }
 
       if ($0 ~ /Snapshot Id[[:space:]]*:/) {
@@ -126,8 +100,9 @@ delete_old_snapshots() {
       }
   }
   ' > "$tmpfile"
+}
 
-  #read the tmp file line by line, parse snapshot name and ID, check age, delete if older than $retention_period
+deleteOldSnapshots() {
   while IFS=: read snapshot_name snapshot_id; do
       snapshot_age_since_epoch=$(date -d "$snapshot_name" +%s 2>/dev/null)
       if [[ $? -ne 0 ]]; then
@@ -136,16 +111,22 @@ delete_old_snapshots() {
       fi
 
       time_delta=$(expr "$today" - "$snapshot_age_since_epoch")
-      if [[ $time_delta -gt $retention_period ]]; then
+      if [[ $time_delta -gt $retention_period_seconds ]]; then
           echo "$(date) - Deleting snapshot: $snapshot_name with ID: $snapshot_id" | tee -a $logfile
           vim-cmd vmsvc/snapshot.remove $vmid $snapshot_id
+          sleep 5
+          getSnapshotDeletionState
+          if [ $? -ne 0 ]; then
+            echo "$(date) - Failed deleting the temporary snapshot, manual action required, exiting..." | tee -a $logfile
+            exit 1
+          fi
       else
           echo "$(date) - Retaining snapshot: $snapshot_name with ID: $snapshot_id" | tee -a $logfile
       fi
   done < "$tmpfile"
 }
 
-get_snapshots_deletion_state(){
+getSnapshotDeletionState(){
   for task in $(vim-cmd vmsvc/get.tasklist $vmid | grep "vm.Snapshot.remove" | sed -n "s/.*vim.Task:\(.*\)'.*/\1/p"); do
     local timeout=300
     local elapsed=0
@@ -177,26 +158,84 @@ get_snapshots_deletion_state(){
 
 
 # ----- Main -----
-get_vm_state
-vm_state_before_snapshot=$?
-if [[ $vm_state_before_snapshot -eq 1 ]]; then
-  echo "----- POWER OFF THE VM -----" | tee -a $logfile
-  power_off_vm
-fi
+while getopts "n:p:r" opt; do
+    case "$opt" in
+        n) vm_name="$OPTARG" ;;
+        p) power_state="$OPTARG" ;;
+        r) retention_period_hours="$OPTARG" ;;
+        ?) echo "Usage: $0 -n <vm_name> -p <on|off> [-r <retention_period_seconds (hours)>]" >&2
+           exit 1 ;;
+    esac
+done
 
-echo "----- DELETE OLD SNAPSHOTS -----" | tee -a $logfile
-delete_old_snapshots
-sleep 5
-get_snapshots_deletion_state
-if [[ $? -ne 0 ]]; then
-  echo "$(date) - Failed deleting one or more snapshots" | tee -a $logfile
+shift $((OPTIND - 1))
+
+if [ -z $vm_name ]; then
+  echo "Error: VM name is required" >&2
   exit 1
 fi
 
-echo "----- CREATE A NEW SNAPSHOT -----" | tee -a $logfile
-create_snapshot
+if [ -z $power_state ]; then
+  echo "Error: Specify whether the snapshots should be created in ON or OFF mode" >&2
+  exit 1
+fi
 
-if [[ $vm_state_before_snapshot -eq 1 ]]; then
-  echo "----- POWER ON THE VM -----" | tee -a $logfile
-  power_on_vm
+if [ $power_state != "on" ] && [ $power_state != "off" ]; then
+  echo "Error: Accepted parameters for -p \"on\" or \"off\"" >&2
+  exit 1
+fi
+
+if [ -z $retention_period_hours ]; then
+  echo "Retention period not specified, using default" >&2
+  retention_period_seconds=172800 #48 hours
+else
+  retention_period_seconds=$((retention_period_hours * 3600))
+  echo "Retention period set to $retention_period_seconds seconds ($retention_period_hours hours)"
+fi
+
+# ----- Parameters and constants -------
+logfile="/opt/vmESXISnapshot_$(echo $vm_name).log"
+tmpfile=$(mktemp /tmp/vm_esxi_backup.XXXXXX)
+today=$(date +%s)
+# --------------------------------------
+
+#get vmid based on the input
+if echo $vm_name | grep -Eq '^[0-9]+$'; then
+  echo "Provide a valid VM Name"
+  exit 1
+else
+  vmid=$(vim-cmd vmsvc/getallvms | grep -w "$vm_name" | awk '{print $1}')
+  if [ -z $vmid ]; then
+    echo "$(date) - Failed to retreive vmid based on the provided name of VM: $vm_name" | tee -a $logfile
+    exit 1
+  elif [ "$(echo $vmid | wc -w)" -gt 1 ]; then
+    echo "$(date) - Failed to retreive vmid based on the provided name of VM: $vm_name (supplied vm_name resolves to multiple vmid's)" | tee -a $logfile
+    exit 1
+  fi
+  echo "$(date) - VM Name \"$vm_name\" was resolved to VM ID: $vmid" | tee -a $logfile
+fi
+
+echo "########## $(date) ##########" | tee -a $logfile
+
+getVmState
+vm_state_before_snapshot=$?
+if [ $power_state = "off" ]; then
+  if [[ $vm_state_before_snapshot -eq 1 ]]; then
+    echo "----- POWER OFF THE VM -----" | tee -a $logfile
+    powerOffVm
+  fi
+fi
+
+echo "----- DELETE OLD SNAPSHOTS -----" | tee -a $logfile
+getSnapshotIdMapping
+deleteOldSnapshots
+
+echo "----- CREATE A NEW SNAPSHOT -----" | tee -a $logfile
+createSnapshot
+
+if [ $power_state = "off" ]; then
+  if [[ $vm_state_before_snapshot -eq 1 ]]; then
+    echo "----- POWER ON THE VM -----" | tee -a $logfile
+    powerOnVm
+  fi
 fi
