@@ -8,6 +8,7 @@
 # Scheduled via cron
 #
 # Jakub Mlynek, David Kozel
+# Version 1.0
 # ------------------------------------------------------------
 
 getVmState() {

@@ -6,6 +6,7 @@
 # to be backed up by conventional methods/solutions.
 # 
 # Jakub Mlynek
+# Version 1.0
 # ------------------------------------------------------------
 
 # TODO: add switch to change between offline and online snapshots
