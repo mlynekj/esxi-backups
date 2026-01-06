@@ -165,7 +165,7 @@ while getopts "n:p:r:" opt; do
         n) vm_name="$OPTARG" ;;
         p) power_state="$OPTARG" ;;
         r) retention_period_hours="$OPTARG" ;;
-        ?) echo "Usage: $0 -n <vm_name> -p <on|off> [-r <retention_period_seconds (hours)>]" >&2
+        ?) echo "Usage: $0 -n <vm_name> -p <on|off> [-r <retention_period (hours)>]" >&2
            exit 1 ;;
     esac
 done

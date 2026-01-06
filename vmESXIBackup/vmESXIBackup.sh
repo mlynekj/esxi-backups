@@ -23,25 +23,54 @@ getVmDirectory() {
 }
 
 getVmdk() {
+  vmsd_file="$vm_absolute_location/$vm_name.vmsd"
+  if [ ! -f "$vmsd_file" ]; then
+    echo "$(date) - Could not find VMSD File based on the VM Name. Retrying with number suffixes" | tee -a $logfile
+    for suffix in $(seq 1 10); do
+      vmsd_file_suffix="$vm_absolute_location/${vm_name}_${suffix}.vmsd"
+      if [ ! -f "$vmsd_file_suffix" ]; then
+        continue
+      else
+        echo "$(date) - Found VMSD File: $vmsd_file_suffix" | tee -a $logfile
+        vmsd_file=$vmsd_file_suffix
+        break
+      fi
+    done
+    if [ ! -f "$vmsd_file" ]; then
+      echo "$(date) - No VMSD File found" | tee -a $logfile
+      return 1
+    fi
+  fi
+
   vmdks_to_clone=""
-  disks="$(grep -o 'disk[0-9]\+' "$vm_absolute_location/$vm_name.vmsd" | sort -u)"
+  disks="$(grep -o 'disk[0-9]\+' "$vmsd_file" | sort -u)"
   echo -e "$(date) - Found following disks:\n$disks" | tee -a $logfile
   for disk in $disks; do 
-    snapshot_disks="$(grep -E "snapshot[0-9]+\.$disk+\.fileName" "$vm_absolute_location/$vm_name.vmsd")"
+    snapshot_disks="$(grep -E "snapshot[0-9]+\.$disk+\.fileName" "$vmsd_file")"
     echo -e "$(date) - For disk \"$disk, found these snapshots:\n$snapshot_disks" | tee -a $logfile
     latest_snapshot=$(echo -e "$snapshot_disks" | sort | tail -n 1)
     latest_snapshot_disk=$(echo $latest_snapshot | awk -F' = ' '{print $2}' | sed 's/"//g')
     echo "$(date) - Latest snapshot for disk \"$disk\" is: \"$(echo $latest_snapshot | cut -d . -f1)\", cloning based on its disk: $(echo $latest_snapshot_disk)" | tee -a $logfile
     vmdks_to_clone="$vmdks_to_clone $latest_snapshot_disk"
   done
-  echo "$(date) - VM will be cloned from following VMDK/s: $vmdks_to_clone" | tee -a $logfile
+  if [ -z $vmdks_to_clone ]; then
+    echo "$(date) - Could not find any VMDKS for the specified VM" | tee -a $logfile
+    return 1
+  else
+    echo "$(date) - VM will be cloned from following VMDK/s: $vmdks_to_clone" | tee -a $logfile
+  fi
 }
 
 backupVm() {
   echo "$(date) - Backing up the VM (.vmdk, .vmx, .nvram)" | tee -a $logfile
   for vmdk in $vmdks_to_clone; do
-    if [ $DEBUG = true ]; then read -p "CLONE $vm_absolute_location/$vmdk TO $backup_instance_directory/$vmdk. Press enter to continue"; fi
-    vmkfstools -i "$vm_absolute_location/$vmdk" "$backup_instance_directory/$vmdk" -d thin >> $logfile 2>&1
+    if [ $DEBUG = true ]; then
+      read -p "CLONE $vm_absolute_location/$vmdk TO $backup_instance_directory/$vmdk. Press enter to continue"
+      vmkfstools -i "$vm_absolute_location/$vmdk" "$backup_instance_directory/$vmdk" -d thin
+    else
+      vmkfstools -i "$vm_absolute_location/$vmdk" "$backup_instance_directory/$vmdk" -d thin >> $logfile 2>&1
+    fi
+    
     if [ $? -eq 0 ]; then
       echo "$(date) - Completed vmkfs cloning on VMDK: $vmdk" | tee -a $logfile
     else
@@ -50,21 +79,57 @@ backupVm() {
     fi
   done
   
-  if [ $DEBUG = true ]; then read -p "COPY $vm_absolute_location/$vm_name.vmx TO $backup_instance_directory/$backup_name.vmx. Press enter to continue"; fi
-  cp "$vm_absolute_location/$vm_name.vmx" "$backup_instance_directory/$backup_name.vmx" >> $logfile 2>&1
+  vmx_file="$vm_absolute_location/$vm_name.vmx"
+  if [ ! -f "$vmx_file" ]; then
+    echo "$(date) - Could not find VMX File based on the VM Name. Retrying with number suffixes" | tee -a $logfile
+    for suffix in $(seq 1 10); do
+      vmx_file_suffix="$vm_absolute_location/${vm_name}_${suffix}.vmx"
+      if [ ! -f "$vmx_file_suffix" ]; then
+        continue
+      else
+        echo "$(date) - Found VMX File: $vmx_file_suffix" | tee -a $logfile
+        vmx_file=$vmx_file_suffix
+        break
+      fi
+    done
+    if [ ! -f "$vmx_file" ]; then
+      echo "$(date) - No VMX File found" | tee -a $logfile
+      return 1
+    fi
+  fi
+  if [ $DEBUG = true ]; then read -p "COPY $vmx_file TO $backup_instance_directory/$backup_name.vmx. Press enter to continue"; fi
+  cp "$vmx_file" "$backup_instance_directory/$backup_name.vmx" >> $logfile 2>&1
   if [ $? -eq 0 ]; then
-    echo "$(date) - Completed copying: $vm_absolute_location/$vm_name.vmx to $backup_instance_directory/$backup_name.vmx" | tee -a $logfile
+    echo "$(date) - Completed copying: $vmx_file to $backup_instance_directory/$backup_name.vmx" | tee -a $logfile
   else
-    echo "$(date) - Failed copying: $vm_absolute_location/$vm_name.vmx to $backup_instance_directory/$backup_name.vmx" | tee -a $logfile
+    echo "$(date) - Failed copying: $vmx_file to $backup_instance_directory/$backup_name.vmx" | tee -a $logfile
     return 1
   fi
   
-  if [ $DEBUG = true ]; then read -p "COPY $vm_absolute_location/$vm_name.nvram TO $backup_instance_directory/$backup_name.nvram. Press enter to continue"; fi
-  cp "$vm_absolute_location/$vm_name.nvram" "$backup_instance_directory/$backup_name.nvram" >> $logfile 2>&1
+  nvram_file="$vm_absolute_location/$vm_name.nvram"
+  if [ ! -f "$nvram_file" ]; then
+    echo "$(date) - Could not find NVRAM File based on the VM Name. Retrying with number suffixes" | tee -a $logfile
+    for suffix in $(seq 1 10); do
+      nvram_file_suffix="$vm_absolute_location/${vm_name}_${suffix}.nvram"
+      if [ ! -f "$vmx_file_suffix" ]; then
+        continue
+      else
+        echo "$(date) - Found NVRAM File: $nvram_file_suffix" | tee -a $logfile
+        nvram_file=$nvram_file_suffix
+        break
+      fi
+    done
+    if [ ! -f "$nvram_file" ]; then
+      echo "$(date) - No NVRAM File found" | tee -a $logfile
+      return 1
+    fi
+  fi
+  if [ $DEBUG = true ]; then read -p "COPY $vm_absolute_location/$nvram_file TO $backup_instance_directory/$backup_name.nvram. Press enter to continue"; fi
+  cp "$nvram_file" "$backup_instance_directory/$backup_name.nvram" >> $logfile 2>&1
   if [ $? -eq 0 ]; then
-    echo "$(date) - Completed copying: $vm_absolute_location/$vm_name.nvram to $backup_instance_directory/$backup_name.nvram" | tee -a $logfile
+    echo "$(date) - Completed copying: $nvram_file to $backup_instance_directory/$backup_name.nvram" | tee -a $logfile
   else
-    echo "$(date) - Failed copying: $vm_absolute_location/$vm_name.nvram to $backup_instance_directory/$backup_name.nvram" | tee -a $logfile
+    echo "$(date) - Failed copying: $nvram_file to $backup_instance_directory/$backup_name.nvram" | tee -a $logfile
     return 1
   fi
 }
@@ -281,12 +346,13 @@ getSnapshotIdMapping
 echo "----- FIND VMs DIRECTORY -----" | tee -a $logfile
 if [ $DEBUG = true ]; then read -p "GET VM DIRECTORY. Press enter to continue"; fi
 getVmDirectory
-required_space=$(du -s "$vm_absolute_location" | awk '{print $1}')
 required_space_human=$(du -sh "$vm_absolute_location" | awk '{print $1}')
-available_space=$(df "$backup_directory" | awk 'NR==2 {print $4}')
 available_space_human=$(df -h "$backup_directory" | awk 'NR==2 {print $4}')
+required_space=$(du -sk "$vm_absolute_location" | awk '{print $1}')
+available_space=$(df -k "$backup_directory" | awk 'NR==2 {print $4}')
 echo "$(date) - The backup requires $required_space_human of free space. Available space in the target directory: $available_space_human"
-if [ "$required_space" -gt "$available_space" ]; then
+if [ $DEBUG = true ]; then echo "$required_space ($available_space)"; fi
+if [ $(echo $required_space) -gt $(echo $available_space) ]; then
   echo "$(date) - Insufficient disk space for backup, exiting..." | tee -a $logfile
   deleteTmpSnapshot
   exit 1
@@ -295,6 +361,11 @@ fi
 echo "----- FIND VMs VMDK FILES -----" | tee -a $logfile
 if [ $DEBUG = true ]; then read -p "FIND VMKDS. Press enter to continue"; fi
 getVmdk
+if [ $? -eq 1 ]; then
+  echo "$(date) - Unable to find disk files for the VM, exiting..." | tee -a $logfile
+  deleteTmpSnapshot
+  exit 1
+fi
 
 echo "----- BACKUP THE VM -----" | tee -a $logfile
 if [ $DEBUG = true ]; then read -p "BACKUP THE VM. Press enter to continue"; fi
