@@ -6,7 +6,7 @@
 # to be backed up by conventional methods/solutions.
 # 
 # Jakub Mlynek
-# Version 1.0
+# Version 1.0.1
 # ------------------------------------------------------------
 
 # TODO: add switch to change between offline and online snapshots
@@ -250,7 +250,7 @@ getSnapshotCreationState(){
 
 rotateOldBackups(){
   backup_count=$(find "$backup_directory" -maxdepth 1 -type d -name "${vm_name}_*" | wc -l)
-  if [ $backup_count -lt $retention_number ]; then
+  if [ $backup_count -le $retention_number ]; then
     echo "$(date) - No old backups found to be deleted" | tee -a $logfile
   fi
   while [ $backup_count -gt $retention_number ]; do
@@ -264,6 +264,8 @@ rotateOldBackups(){
 
 
 # ---------------------------------------- Main ----------------------------------------
+DEBUG=false
+
 while getopts "n:b:r:d" opt; do
     case "$opt" in
         n) vm_name="$OPTARG" ;;
@@ -351,7 +353,7 @@ required_space_human=$(du -sh "$vm_absolute_location" | awk '{print $1}')
 available_space_human=$(df -h "$backup_directory" | awk 'NR==2 {print $4}')
 required_space=$(du -sk "$vm_absolute_location" | awk '{print $1}')
 available_space=$(df -k "$backup_directory" | awk 'NR==2 {print $4}')
-echo "$(date) - The backup requires $required_space_human of free space. Available space in the target directory: $available_space_human"
+echo "$(date) - The backup requires $required_space_human of free space. Available space in the target directory: $available_space_human" | tee -a $logfile
 if [ $DEBUG = true ]; then echo "$required_space ($available_space)"; fi
 if [ $(echo $required_space) -gt $(echo $available_space) ]; then
   echo "$(date) - Insufficient disk space for backup, exiting..." | tee -a $logfile
